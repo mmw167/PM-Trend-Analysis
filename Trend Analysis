@@ -1,0 +1,214 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  SCRIPT 2 OF 2 — TRENDS ANALYSIS
+#
+#  INPUT:  current_egs_cases.csv  (produced by Script 1)
+#          - 21 recovered directly from raw OmniTrak files
+#          - 3 historical manually curated cases from Dr. Adeyemi
+#  OUTPUT: Two 3x3 figures (patient sensor + door sensor)
+#          Two summary tables (CSV)
+#
+# ══════════════════════════════════════════════════════════════════════════════
+
+library(tidyverse)
+library(lubridate)
+library(patchwork)
+
+
+# ── 1. LOAD ───────────────────────────────────────────────────────────────────
+egs <- read_csv("~/Desktop/all_egs_cases.csv", show_col_types = FALSE)
+egs <- egs %>%
+  mutate(patient_id = as.character(patient_id))
+
+case_times <- read_excel("~/Desktop/case_times.xlsx") %>%
+  mutate(
+    patient_id = as.character(patient_id),
+    case_start = ymd_hms(case_start),
+    case_end   = ymd_hms(case_end)
+  )
+
+cat("Total rows:", nrow(egs), "\n")
+cat("Patients:", n_distinct(egs$patient_id), "\n")
+cat("Patient IDs:", paste(sort(unique(egs$patient_id)), collapse = ", "), "\n")
+
+
+# ── 2. REMOVE SENSOR ERROR ROWS + JOIN CASE TIMES ────────────────────────────
+egs_clean <- egs %>%
+  filter(pm_sensor_error_status_px == 0,
+         pm_sensor_error_status_door == 0) %>%
+  left_join(case_times, by = "patient_id")
+
+cat("Rows after sensor-error filter:", nrow(egs_clean), "\n")
+cat("Patients remaining:", n_distinct(egs_clean$patient_id), "\n")
+
+
+# ── 3. CASE-BASED LAST HOUR FILTER (USING EXTERNAL CASE TIMES) ───────────────
+egs_clean <- egs_clean %>%
+  filter(
+    !is.na(case_start),
+    !is.na(case_end),
+    date_time >= (case_end - hours(1)),
+    date_time <= case_end
+  ) %>%
+  mutate(
+    minutes_from_end = as.numeric(difftime(case_end, date_time, units = "mins")),
+    time_bin = floor((60 - minutes_from_end) / 5) * 5
+  )
+
+cat("Unique patients in final dataset:", n_distinct(egs_clean$patient_id), "\n")
+cat("Rows in last hour:", nrow(egs_clean), "\n")
+
+# ── QUALITY CHECK ─────────────────────────────────────────────────────────────
+cat("Missing case_start:", sum(is.na(egs_clean$case_start)), "\n")
+cat("Missing case_end:", sum(is.na(egs_clean$case_end)), "\n")
+
+# ── 4. DEFINE METRICS ─────────────────────────────────────────────────────────
+patient_metrics <- c("nc_0_3_0_5mm_px", "nc_0_5_1_0mm_px",
+                     "nc_1_0_2_5mm_px", "nc_2_5_4_0mm_px", "nc_4_0_10_0mm_px",
+                     "pm_1_0_px", "pm_2_5_px", "pm_4_0_px", "pm_10_0_px")
+
+door_metrics <- c("nc_0_3_0_5mm_door", "nc_0_5_1_0mm_door",
+                  "nc_1_0_2_5mm_door", "nc_2_5_4_0mm_door", "nc_4_0_10_0mm_door",
+                  "pm_1_0_door", "pm_2_5_door", "pm_4_0_door", "pm_10_0_door")
+
+# Check columns exist — if any missing, print actual column names so you can fix
+check_cols <- function(metrics, df, label) {
+  missing <- metrics[!metrics %in% names(df)]
+  if (length(missing) > 0) {
+    cat("WARNING:", label, "— missing columns:", paste(missing, collapse = ", "), "\n")
+    cat("Available pm/nc columns:", paste(grep("^(pm|nc)", names(df), value = TRUE), collapse = ", "), "\n")
+  }
+  metrics[metrics %in% names(df)]
+}
+
+patient_metrics <- check_cols(patient_metrics, egs_clean, "Patient")
+door_metrics    <- check_cols(door_metrics,    egs_clean, "Door")
+
+
+# ── 5. TRENDS TABLES ──────────────────────────────────────────────────────────
+trends_px <- egs_clean %>%
+  group_by(time_bin) %>%
+  summarise(
+    across(all_of(patient_metrics),
+           list(median = ~ median(., na.rm = TRUE),
+                q25    = ~ quantile(., 0.25, na.rm = TRUE),
+                q75    = ~ quantile(., 0.75, na.rm = TRUE))),
+    n_cases = n_distinct(patient_id)
+  )
+
+trends_door <- egs_clean %>%
+  group_by(time_bin) %>%
+  summarise(
+    across(all_of(door_metrics),
+           list(median = ~ median(., na.rm = TRUE),
+                q25    = ~ quantile(., 0.25, na.rm = TRUE),
+                q75    = ~ quantile(., 0.75, na.rm = TRUE))),
+    n_cases = n_distinct(patient_id)
+  )
+
+
+# ── 6. PLOT FUNCTION ──────────────────────────────────────────────────────────
+plot_metric <- function(trends_df, metric_name, label) {
+  med_col <- paste0(metric_name, "_median")
+  q25_col <- paste0(metric_name, "_q25")
+  q75_col <- paste0(metric_name, "_q75")
+  
+  ggplot(trends_df, aes(x = time_bin)) +
+    geom_ribbon(aes(ymin = .data[[q25_col]], ymax = .data[[q75_col]]),
+                alpha = 0.2, fill = "steelblue") +
+    geom_line(aes(y = .data[[med_col]]),
+              color = "steelblue", linewidth = 0.8) +
+    labs(title = label, x = "Minutes", y = "Concentration") +
+    theme_minimal()
+}
+
+
+# ── 7. PATIENT SENSOR FIGURE ──────────────────────────────────────────────────
+n_px <- n_distinct(egs_clean$patient_id)
+
+p1 <- plot_metric(trends_px, "nc_0_3_0_5mm_px",  "NC 0.3–0.5 µm")
+p2 <- plot_metric(trends_px, "nc_0_5_1_0mm_px",  "NC 0.5–1.0 µm")
+p3 <- plot_metric(trends_px, "nc_1_0_2_5mm_px",  "NC 1.0–2.5 µm")
+p4 <- plot_metric(trends_px, "nc_2_5_4_0mm_px",  "NC 2.5–4.0 µm")
+p5 <- plot_metric(trends_px, "nc_4_0_10_0mm_px", "NC 4.0–10.0 µm")
+p6 <- plot_metric(trends_px, "pm_1_0_px",        "PM 1.0 µg/m³")
+p7 <- plot_metric(trends_px, "pm_2_5_px",        "PM 2.5 µg/m³")
+p8 <- plot_metric(trends_px, "pm_4_0_px",        "PM 4.0 µg/m³")
+p9 <- plot_metric(trends_px, "pm_10_0_px",       "PM 10.0 µg/m³")
+
+figure_px <- (p1 | p2 | p3) / (p4 | p5 | p6) / (p7 | p8 | p9) +
+  plot_annotation(
+    title   = "PM Trajectory — Last Hour of EGS Cases (Patient Sensor)",
+    caption = paste("n =", n_px, "cases; 5-min bins; median ± IQR")
+  )
+
+figure_px
+
+ggsave("egs_trends_patient_sensor.png", figure_px, width = 14, height = 10, dpi = 300)
+cat("Patient sensor figure saved.\n")
+
+
+# ── 8. DOOR SENSOR FIGURE ─────────────────────────────────────────────────────
+n_door <- n_distinct(egs_clean$patient_id)
+
+d1 <- plot_metric(trends_door, "nc_0_3_0_5mm_door",  "NC 0.3–0.5 µm")
+d2 <- plot_metric(trends_door, "nc_0_5_1_0mm_door",  "NC 0.5–1.0 µm")
+d3 <- plot_metric(trends_door, "nc_1_0_2_5mm_door",  "NC 1.0–2.5 µm")
+d4 <- plot_metric(trends_door, "nc_2_5_4_0mm_door",  "NC 2.5–4.0 µm")
+d5 <- plot_metric(trends_door, "nc_4_0_10_0mm_door", "NC 4.0–10.0 µm")
+d6 <- plot_metric(trends_door, "pm_1_0_door",        "PM 1.0 µg/m³")
+d7 <- plot_metric(trends_door, "pm_2_5_door",        "PM 2.5 µg/m³")
+d8 <- plot_metric(trends_door, "pm_4_0_door",        "PM 4.0 µg/m³")
+d9 <- plot_metric(trends_door, "pm_10_0_door",       "PM 10.0 µg/m³")
+
+figure_door <- (d1 | d2 | d3) / (d4 | d5 | d6) / (d7 | d8 | d9) +
+  plot_annotation(
+    title   = "PM Trajectory — Last Hour of EGS Cases (Door Sensor)",
+    caption = paste("n =", n_door, "cases; 5-min bins; median ± IQR")
+  )
+
+figure_door
+
+ggsave("egs_trends_door_sensor.png", figure_door, width = 14, height = 10, dpi = 300)
+cat("Door sensor figure saved.\n")
+
+
+# ── 9. SUMMARY TABLES ────────────────────────────────────────────────────────
+make_summary_table <- function(egs_clean, trends_df, metrics) {
+  map_dfr(metrics, function(m) {
+    med_col <- paste0(m, "_median")
+    overall <- egs_clean %>%
+      summarise(median_overall = median(.data[[m]], na.rm = TRUE),
+                q25_overall    = quantile(.data[[m]], 0.25, na.rm = TRUE),
+                q75_overall    = quantile(.data[[m]], 0.75, na.rm = TRUE))
+    peak_row <- trends_df %>% slice_max(.data[[med_col]], n = 1, with_ties = FALSE)
+    tibble(
+      metric        = m,
+      median        = round(overall$median_overall, 2),
+      IQR           = paste0(round(overall$q25_overall, 2), " – ", round(overall$q75_overall, 2)),
+      peak_time_bin = pull(peak_row, time_bin)
+    )
+  })
+}
+
+summary_px   <- make_summary_table(egs_clean, trends_px,   patient_metrics)
+summary_px
+summary_door <- make_summary_table(egs_clean, trends_door, door_metrics)
+summary_door
+
+cat("\n── Patient Sensor Summary ──\n")
+print(summary_px, n = Inf)
+
+cat("\n── Door Sensor Summary ──\n")
+print(summary_door, n = Inf)
+
+write_csv(summary_px,   "egs_summary_patient_sensor.csv")
+write_csv(summary_door, "egs_summary_door_sensor.csv")
+
+cat("\n══════════════════════════════════════════════\n")
+cat(" ANALYSIS COMPLETE\n")
+cat("  Cases analysed:", n_distinct(egs_clean$patient_id), "\n")
+cat("  egs_trends_patient_sensor.png\n")
+cat("  egs_trends_door_sensor.png\n")
+cat("  egs_summary_patient_sensor.csv\n")
+cat("  egs_summary_door_sensor.csv\n")
+cat("══════════════════════════════════════════════\n")
