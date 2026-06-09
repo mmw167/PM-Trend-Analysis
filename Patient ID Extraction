@@ -1,0 +1,72 @@
+library(readr)
+library(stringr)
+
+# -------------------------
+# 1. FOLDERS
+# -------------------------
+folders <- c(
+  "~/Desktop/old data",
+  "~/Desktop/additional data goldsilver- May 28 2026",
+  "~/Desktop/TSI OmniTrak Silver Feb 18",
+  "~/Desktop/TSI OmniTrak Gold Feb 18",
+  "~/Desktop/egs-cabg px1",
+  "~/Desktop/egs-cabg door"
+)
+
+# -------------------------
+# 2. GET ALL CSV FILES
+# -------------------------
+files <- unlist(lapply(folders, function(f) {
+  list.files(f, full.names = TRUE, pattern = "\\.csv$")
+}))
+
+files <- files[file.exists(files)]
+
+# -------------------------
+# 3. EXTRACT FUNCTION
+# -------------------------
+extract_ru <- function(file) {
+  
+  lines <- try(readLines(file, warn = FALSE), silent = TRUE)
+  if (inherits(lines, "try-error")) return(NA)
+  
+  ru <- str_extract(lines, "RU[- ]?A[0-9]+")
+  ru <- str_replace_all(ru, " ", "-")
+  
+  unique(ru)
+}
+
+# -------------------------
+# 4. RUN ACROSS ALL FILES
+# -------------------------
+all_ru <- unlist(lapply(files, extract_ru))
+
+# -------------------------
+# 5. CLEAN RU IDs
+# -------------------------
+ru_patients <- unique(na.omit(all_ru))
+
+# -------------------------
+# 6. EXTRACT 4-DIGIT IDS (FINAL ANALYSIS SET)
+# -------------------------
+ru_numbers <- str_extract(ru_patients, "[0-9]{4}")
+ru_numbers <- unique(na.omit(ru_numbers))
+
+# -------------------------
+# 7. CREATE FINAL TABLE (USE CORRECT DATA)
+# -------------------------
+all_patient_table <- data.frame(
+  patient_id = ru_numbers
+)
+
+# -------------------------
+# 8. SORT NUMERICALLY
+# -------------------------
+all_patient_table <- all_patient_table[
+  order(as.numeric(all_patient_table$patient_id)),
+]
+
+# -------------------------
+# 9. VIEW RESULT
+# -------------------------
+all_patient_table
