@@ -22,6 +22,8 @@ files <- unlist(lapply(folders, function(f) {
 
 files <- files[file.exists(files)]
 
+egs_csv <- read.csv("~/Desktop/all_egs_cases.csv", stringsAsFactors = FALSE)
+
 # -------------------------
 # 3. EXTRACT FUNCTION
 # -------------------------
@@ -35,6 +37,10 @@ extract_ru <- function(file) {
   
   unique(ru)
 }
+
+egs_ids <- egs_csv$patient_id
+egs_ids <- str_replace_all(egs_ids, " ", "-")
+egs_ids <- na.omit(egs_ids)
 
 # -------------------------
 # 4. RUN ACROSS ALL FILES
@@ -50,7 +56,14 @@ ru_patients <- unique(na.omit(all_ru))
 # 6. EXTRACT 4-DIGIT IDS (FINAL ANALYSIS SET)
 # -------------------------
 ru_numbers <- str_extract(ru_patients, "[0-9]{4}")
-ru_numbers <- unique(na.omit(ru_numbers))
+csv_numbers <- str_extract(egs_ids, "[0-9]{4}")
+
+# combine both sources
+ru_numbers <- c(ru_numbers, csv_numbers)
+
+# clean
+ru_numbers <- na.omit(ru_numbers)
+ru_numbers <- unique(ru_numbers)
 
 # -------------------------
 # 7. CREATE FINAL TABLE (USE CORRECT DATA)
