@@ -1,0 +1,165 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# SIMPLE LAST-HOUR TREND ANALYSIS (SINGLE FILE VERSION)
+# Uses ONLY: combined_patients.xlsx
+# Outputs: patient + door trends (last hour only)
+# ══════════════════════════════════════════════════════════════════════════════
+
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(patchwork)
+library(ggplot2)
+
+# ── 1. LOAD SINGLE FILE ──────────────────────────────────────────────────────
+data <- read_excel("~/Desktop/combined_patients.xlsx") %>%
+  mutate(
+    patient_id = as.character(patient_id),
+    date_time   = ymd_hms(date_time),
+    case_start  = ymd_hms(case_start),
+    case_end    = ymd_hms(case_end)
+  )
+
+# ── 2. LAST HOUR FILTER (CORE STEP) ─────────────────────────────────────────
+data_last_hour <- data %>%
+  filter(
+    !is.na(case_start),
+    !is.na(case_end),
+    date_time >= (case_end - hours(1)),
+    date_time <= case_end,
+    pm_sensor_error_status_px == 0,
+    pm_sensor_error_status_door == 0
+  ) %>%
+  mutate(
+    minutes_from_end = as.numeric(difftime(case_end, date_time, units = "mins")),
+    time_bin = floor((60 - minutes_from_end) / 5) * 5
+  )
+
+cat("Rows after filtering:", nrow(data_last_hour), "\n")
+
+# ── 3. METRICS ───────────────────────────────────────────────────────────────
+patient_metrics <- intersect(
+  c("nc_0_3_0_5mm_px","nc_0_5_1_0mm_px","nc_1_0_2_5mm_px",
+    "nc_2_5_4_0mm_px","nc_4_0_10_0mm_px",
+    "pm_1_0_px","pm_2_5_px","pm_4_0_px","pm_10_0_px"),
+  names(data_last_hour)
+)
+
+door_metrics <- intersect(
+  c("nc_0_3_0_5mm_door","nc_0_5_1_0mm_door","nc_1_0_2_5mm_door",
+    "nc_2_5_4_0mm_door","nc_4_0_10_0mm_door",
+    "pm_1_0_door","pm_2_5_door","pm_4_0_door","pm_10_0_door"),
+  names(data_last_hour)
+)
+
+# ── 4. TRENDS ───────────────────────────────────────────────────────────────
+trends_px <- data_last_hour %>%
+  group_by(time_bin) %>%
+  summarise(
+    across(all_of(patient_metrics),
+           list(
+             median = ~median(.x, na.rm = TRUE),
+             q25 = ~quantile(.x, 0.25, na.rm = TRUE),
+             q75 = ~quantile(.x, 0.75, na.rm = TRUE)
+           )
+    ),
+    .groups = "drop"
+  )
+
+trends_door <- data_last_hour %>%
+  group_by(time_bin) %>%
+  summarise(
+    across(all_of(door_metrics),
+           list(
+             median = ~median(.x, na.rm = TRUE),
+             q25 = ~quantile(.x, 0.25, na.rm = TRUE),
+             q75 = ~quantile(.x, 0.75, na.rm = TRUE)
+           )
+    ),
+    .groups = "drop"
+  )
+
+cat("Trends created for patient + door\n")
+
+# ── 5. PLOT FUNCTION ────────────────────────────────────────────────────────
+plot_metric <- function(df, metric, title) {
+  ggplot(df, aes(x = time_bin)) +
+    
+    geom_ribbon(aes(
+      ymin = .data[[paste0(metric, "_q25")]],
+      ymax = .data[[paste0(metric, "_q75")]]
+    ), alpha = 0.2, fill = "#2C3E50") +
+    
+    geom_line(aes(y = .data[[paste0(metric, "_median")]]),
+              linewidth = 1, color = "#2C3E50") +
+    
+    labs(
+      title = title,
+      x = "Minutes to Case End",
+      y = "Particle Concentration"
+    ) +
+    
+    theme_minimal(base_size = 12) +
+    
+    theme(
+      plot.title = element_text(size = 11, face = "bold"),
+      axis.title.x = element_text(size = 9, face = "bold"),
+      axis.title.y = element_text(size = 9, face = "bold"),
+      axis.text = element_text(size = 8),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = "gray90")
+    )
+}
+
+# ── 6. PATIENT PLOTS ────────────────────────────────────────────────────────
+p1 <- plot_metric(trends_px, "pm_1_0_px", "PM1.0 - Patient")
+p2 <- plot_metric(trends_px, "pm_2_5_px", "PM2.5 - Patient")
+p3 <- plot_metric(trends_px, "pm_4_0_px", "PM4.0 - Patient")
+p4 <- plot_metric(trends_px, "pm_10_0_px", "PM10 - Patient")
+p5 <- plot_metric(trends_px, "nc_0_3_0_5mm_px", "NC 0.3–0.5")
+p6 <- plot_metric(trends_px, "nc_0_5_1_0mm_px", "NC 0.5–1.0")
+p7 <- plot_metric(trends_px, "nc_1_0_2_5mm_px", "NC 1.0–2.5")
+p8 <- plot_metric(trends_px, "nc_2_5_4_0mm_px", "NC 2.5–4.0")
+p9 <- plot_metric(trends_px, "nc_4_0_10_0mm_px", "NC 4.0–10.0")
+
+figure_px <- (p1 | p2 | p3) /
+  (p4 | p5 | p6) /
+  (p7 | p8 | p9) +
+  plot_annotation(
+    title = "Last 60 Minutes of Case Near Patient",
+    theme = theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  )
+
+png("patient_trends.png", width = 1200, height = 900, res = 150)
+print(figure_px)
+dev.off()
+
+# ── 7. DOOR PLOTS ───────────────────────────────────────────────────────────
+d1 <- plot_metric(trends_door, "pm_1_0_door", "PM1.0 - Door")
+d2 <- plot_metric(trends_door, "pm_2_5_door", "PM2.5 - Door")
+d3 <- plot_metric(trends_door, "pm_4_0_door", "PM4.0 - Door")
+d4 <- plot_metric(trends_door, "pm_10_0_door", "PM10 - Door")
+d5 <- plot_metric(trends_door, "nc_0_3_0_5mm_door", "NC 0.3–0.5")
+d6 <- plot_metric(trends_door, "nc_0_5_1_0mm_door", "NC 0.5–1.0")
+d7 <- plot_metric(trends_door, "nc_1_0_2_5mm_door", "NC 1.0–2.5")
+d8 <- plot_metric(trends_door, "nc_2_5_4_0mm_door", "NC 2.5–4.0")
+d9 <- plot_metric(trends_door, "nc_4_0_10_0mm_door", "NC 4.0–10.0")
+
+figure_door <- (d1 | d2 | d3) /
+  (d4 | d5 | d6) /
+  (d7 | d8 | d9) +
+  plot_annotation(
+    title = "Last 60 Minutes of Case Near Door",
+    theme = theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  )
+
+png("door_trends.png", width = 1200, height = 900, res = 150)
+print(figure_door)
+dev.off()
+
+
+# ── DONE ─────────────────────────────────────────────────────────────────────
+cat("DONE - SINGLE FILE LAST-HOUR PIPELINE COMPLETE\n")
